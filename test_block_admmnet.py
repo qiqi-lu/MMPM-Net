@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import time
 
 import unrollingnet.ADMMREDNet as admmnet
-import unrollingnet.DOPAMINE as dopamine
+import unrollingnet.DOPAMINE_T2 as dopamine
 import functions as func
 import config
 

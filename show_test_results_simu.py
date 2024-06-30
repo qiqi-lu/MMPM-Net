@@ -10,7 +10,7 @@ import functions_show as func_show
 
 ##########################################################################################
 # 1，4，7，13
-sigma_test, type_te_test   = 0.05, 13
+sigma_test, type_te_test   = 0.05, 1
 
 name_resnet   = 'resnet_4_moled_r2_mae_mono_6_mix_10'
 name_rim      = 'rim_Ns_6_f_36_r2_mmse_mean_6_mix_l2_0.001'
@@ -61,6 +61,7 @@ print(maps_pred_rim_m.shape,name_rim)
 print(maps_pred_dopamine_m.shape,name_dopamine)
 print(maps_pred_admmnet_m.shape,name_admmnet)
 
+# rescale the map
 maps_mle_rescale            = func_show.rescale_map(maps_mle,            type_show=type_map_show,type_map=type_map_mle,           scale=scale)
 maps_pred_resnet_recale     = func_show.rescale_map(maps_pred_resnet,    type_show=type_map_show,type_map=type_map_train_resnet,  scale=scale)
 maps_pred_rim_m_recale      = func_show.rescale_map(maps_pred_rim_m,     type_show=type_map_show,type_map=type_map_train_rim,     scale=scale)
@@ -235,7 +236,7 @@ for i in range(N_methods):
     error_map[i] = error_map[i]*np.repeat(ROI_brain,repeats=2,axis=-1)
 
 # --------------------------------------------------------------------------------------------------------
-# figure with ResNet and Ground Truth maps. (transverse)
+# figure with ResNet and Ground Truth maps. (Horizontal arragement)
 # --------------------------------------------------------------------------------------------------------
 grid_width    = page_width/8
 figure_width  = grid_width*6
@@ -260,9 +261,9 @@ cbar_map = fig.colorbar(pcm_map,ax=axes[0,:],shrink=0.8,aspect=30,location='righ
 cbar_dif = fig.colorbar(pcm_dif,ax=axes[1,:],shrink=0.8,aspect=30,location='right',ticks=[error_range[-1]*x/4.0 for x in range(5)])
 cbar_map.ax.set_yticklabels(['0 $s^{-1}$','5','10','15','20'],font=font_dir,fontdict={'fontsize':font_size_legend})
 cbar_dif.ax.set_yticklabels(['0 $s^{-1}$','0.5','1','1.5','2'],font=font_dir,fontdict={'fontsize':font_size_legend})
-plt.savefig(os.path.join('figures','maps_predict_simu_a'))
+plt.savefig(os.path.join('figures','maps_predict_simu_a_horizontal'))
 # --------------------------------------------------------------------------------------------------------
-# figure with ResNet and Ground Truth maps. (longitudinal)
+# figure with ResNet and Ground Truth maps. (vertical arrangement)
 # --------------------------------------------------------------------------------------------------------
 grid_width    = colume_width/4
 figure_width  = grid_width*2
@@ -286,7 +287,7 @@ cbar_map = fig.colorbar(pcm_map,ax=axes[:,0],shrink=0.7,aspect=24,location='bott
 cbar_dif = fig.colorbar(pcm_dif,ax=axes[:,1],shrink=0.7,aspect=24,location='bottom',ticks=[error_range[-1]*x/4.0 for x in range(5)])
 cbar_map.ax.set_xticklabels(['0 ','5','10','15','20'],font=font_dir,fontdict={'fontsize':font_size_legend})
 cbar_dif.ax.set_xticklabels(['0 ','0.5','1','1.5','2'],font=font_dir,fontdict={'fontsize':font_size_legend})
-plt.savefig(os.path.join('figures','maps_predict_simu_a_longutidinal'))
+plt.savefig(os.path.join('figures','maps_predict_simu_a_vertical'))
 
 # --------------------------------------------------------------------------------------------------------
 # figure without Resnet and Ground Truth maps.

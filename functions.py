@@ -21,6 +21,12 @@ import pydicom
 import h5py
 import SimpleITK as sitk
 
+def T1_to_T1s(T1,FA,TR):
+    'Convert T1 into T1* according to Look-Locker sequence.'
+    np.seterr(divide='ignore',invalid='ignore')
+    T1s = np.divide(1.0,1.0/T1-np.log(np.cos(FA/360*2*np.pi))/TR,out=np.zeros_like(T1),where=T1!=0)
+    return T1s
+
 def rescale_wimg(img,percent=99):
     scale = np.percentile(img[...,0],percent)
     img_rescale = img/scale
@@ -137,18 +143,29 @@ def read_binary(file_name,data_type='uint8',shape=None):
     data = np.reshape(data,shape)
     return data
 
-def T2_Relax(m0,t2,tes):
+def Relax_T2(A,T2,tau):
     """
     mono-exponential function, S = S0*exp(-te/T2).
     """
     s  = []
-    Nq = tes.shape[-1]
+    Nq = tau.shape[-1]
     for i in range(Nq):
-        sq = np.where(t2<=0.0,0.0,m0*np.exp(-tes[i]/t2))
+        sq = np.where(T2<=0.0,0.0,A*np.exp(-tau[i]/T2))
         s.append(sq)
     s = np.stack(s)
     s = np.moveaxis(s,source=0,destination=-1)
     return s
+
+def Relax_T1_three_para_magn(A,B,T1,tau,signed=True):
+    """
+    mono-exponential function, s = A-B*exp(-tau/T1).
+    - A,B,T1, [Ny,Nx]
+    - tau, [Nq]
+    """
+    A,B,T1 = A[...,np.newaxis],B[...,np.newaxis],T1[...,np.newaxis]
+    if signed == True : sq = np.where(T1<=0.0,0.0,A-B*np.exp(-tau/T1))
+    if signed == False: sq = np.where(T1<=0.0,0.0,np.abs(A-B*np.exp(-tau/T1)))
+    return sq
 
 def patch(data,mask,patch_size=40,step_size=20):
     """ 
@@ -229,13 +246,14 @@ def addNoiseMix(imgs,sigma_low,sigma_high,noise_type='Gaussian',NCoils=1):
     ### RETURN
     - imgs_n: images with noise.
     """
-    N       = imgs.shape[0]
-    imgs_n  = np.zeros_like(imgs)
-    pbar    = tqdm.tqdm(total=N,desc='Add Noise (mix)')
+    N = imgs.shape[0]
+    imgs_n = np.zeros_like(imgs)
+    RanGen = np.random.default_rng(seed=0)
+    sigmas = RanGen.uniform(low=sigma_low,high=sigma_high,size=N)
+    pbar   = tqdm.tqdm(total=N,desc='Add Noise (mix)')
     for i in range(N):
         pbar.update(1)
-        sigma     = np.random.uniform(low=sigma_low,high=sigma_high)
-        imgs_n[i] = addNoise(imgs[i],sigma=sigma,noise_type=noise_type,NCoils=NCoils)
+        imgs_n[i] = addNoise(imgs[i],sigma=sigmas[i],noise_type=noise_type,NCoils=NCoils)
     pbar.close()
     return imgs_n
 
@@ -244,6 +262,19 @@ def model_exp_mono_t(c,x,y):
 
 def model_exp_mono_r(c,x,y):
     return y - c[0]*np.exp(-x*c[1])
+
+def model_T1_three_para_magn_signed_t(c,x,y):
+    return y - (c[0]-c[1]*np.exp(-x/c[2]))
+
+def model_T1_three_para_magn_signed_r(c,x,y):
+    return y - (c[0]-c[1]*np.exp(-x*c[2]))
+
+def model_T1_three_para_magn_unsigned_t(c,x,y):
+    return y - np.abs(c[0]-c[1]*np.exp(-x/c[2]))
+
+def model_T1_three_para_magn_unsigned_r(c,x,y):
+    return y - np.abs(c[0]-c[1]*np.exp(-x*c[2]))
+
 
 def LogLinear(s,tau,n=0,parameter_type='time'):
     if n == 0: n = s.shape[-1]
@@ -289,30 +320,60 @@ def exp_mono(s,tau,parameter_type='time',**kwargs):
         p0,p1 = p[0],p[1]
     return [p0, p1]
 
+def fitting_T1_three_para_magn(s,tau,parameter_type='time',signed=True,**kwargs):
+    '''
+    T1 mapping, three parameter model, `s=p0-p1*exp(-tau/p2)` or `s=p0-p1*exp(-tau*p2)`.
+    - s, signal. [Nq]
+    - tau, TE or TI (ms). [Nq]
+    - parameter_type, `time` or `rate`.
+    '''
+    s_max = np.max(np.abs(s))
+    try:
+        if parameter_type == 'time':
+            x0 = np.array([s_max, 2.0*s_max, 1000.0]) 
+            bounds = ([0.0, 0.0, 0.1], [np.inf, np.inf, 10000.0])
+            if signed == True : res = least_squares(model_T1_three_para_magn_signed_t, x0, args=(tau, s), bounds = bounds)
+            if signed == False: res = least_squares(model_T1_three_para_magn_unsigned_t, x0, args=(tau, s), bounds = bounds)
+            p0, p1, p2 = res.x[0], res.x[1], res.x[2]
+        if parameter_type == 'rate':
+            x0 = np.array([s_max, 2.0*s_max, 1.0/1000.0]) 
+            bounds = ([0.0, 0.0, 0.0001], [np.inf, np.inf, 10.0])
+            if signed == True : res = least_squares(model_T1_three_para_magn_signed_r, x0, args=(tau, s), bounds = bounds)
+            if signed == False: res = least_squares(model_T1_three_para_magn_unsigned_r, x0, args=(tau, s), bounds = bounds)
+            p0, p1, p2 = res.x[0], res.x[1], res.x[2]
+    except:
+        print('Warnning: fitting error. Set parameters as zero.')
+        p0, p1, p2 = 0, 0, 0 
+    return [p0, p1, p2]
+
 def invalid_model(x):
     raise Exception('Invalid Model.')
 
-def PixelWiseMapping(imgs,tau,model='exp_mono',parameter_type='time',sigma=None,NCoils=1,pbar_disable=False,pbar_leave=True,ac=1):
-    models = {'exp_mono': exp_mono,}
-    fun    = models.get(model,invalid_model)
+def PixelWiseMapping(imgs,tau,fitting_model='exp_mono',signed=True,parameter_type='time',sigma=None,NCoils=1,pbar_disable=False,pbar_leave=True,ac=1,**kwargs):
+    models = {'exp_mono': exp_mono,
+              'T1_three_para_magn':fitting_T1_three_para_magn,
+              }
+    fun = models.get(fitting_model,invalid_model)
     Ny,Nx,Nc = imgs.shape
     maps = []
     imgs = np.reshape(imgs,(-1,Nc))
 
     global func_fun
     def func_fun(i):
-        para = fun(s=imgs[i],tau=tau,parameter_type=parameter_type,sigma=sigma,NCoils=NCoils)
+        para = fun(s=imgs[i],tau=tau,parameter_type=parameter_type,signed=signed,sigma=sigma,NCoils=NCoils)
         return (i, para)
 
+    # parallel computation
     pool = multiprocessing.Pool(ac)
 
-    pbar = tqdm.tqdm(total=Ny*Nx,desc='PWM',leave=pbar_leave,disable=pbar_disable)
+    pbar = tqdm.tqdm(total=Ny*Nx,desc='Pixel-wise Fitting',leave=pbar_leave,disable=pbar_disable)
     for kp in pool.imap_unordered(func_fun,range(Ny*Nx)):
         maps.append(kp)
         pbar.update(1)
     pool.close()
     pbar.close()
 
+    # sort pixel and arrange to original position.
     maps = sorted(maps,key=operator.itemgetter(0))
     maps = [pixel[1] for pixel in maps]
     maps = np.reshape(np.stack(maps),(Ny,Nx,-1))
@@ -494,6 +555,7 @@ def parse_noise_free(example):
     return (img_gt,map_gt,seg,tes)
 
 def parse_all(example):
+    # parse training data.
     feature_discription = {
         'imgs_gt_bi':   tf.io.FixedLenFeature([], tf.string),
         'imgs_n_bi':    tf.io.FixedLenFeature([], tf.string),
@@ -531,27 +593,46 @@ def parse_all(example):
     tes         = tf.reshape(tes, shape=[Nc])
     return (imgs_gt_bi,imgs_n_bi,imgs_gt_mono,imgs_n_mono,maps_gt,seg,tes)
 
-def extract(imgs_gt_bi,imgs_n_bi,imgs_gt_mono,imgs_n_mono,maps_gt,seg,tes,id_te=[],rescale=100.0,model_type='unrolling',data_type='mono',):
-    if len(id_te) != 0:
-        imgs_gt_bi   = tf.gather(imgs_gt_bi,indices=id_te,axis=-1)
-        imgs_n_bi    = tf.gather(imgs_n_bi,indices=id_te,axis=-1)
-        imgs_gt_mono = tf.gather(imgs_gt_mono,indices=id_te,axis=-1)
-        imgs_n_mono  = tf.gather(imgs_n_mono,indices=id_te,axis=-1)
-        tes = tf.gather(tes,indices=id_te,axis=-1)
+def extract(imgs_gt_bi,imgs_n_bi,imgs_gt_mono,imgs_n_mono,maps_gt,seg,tau,
+            id_tau=[],rescale=100.0,model_type='unrolling',data_type='mono',task='T2mapping'):
+    '''
+    Extract partial data to train the network, and rescale the parameters.
+    - rescale, rescale the T2/T1 values to about 1, to accelerate the training.
+    '''
+    if len(id_tau) != 0: # if specific tau values was set
+        imgs_gt_bi   = tf.gather(imgs_gt_bi,indices=id_tau,axis=-1)
+        imgs_n_bi    = tf.gather(imgs_n_bi,indices=id_tau,axis=-1)
+        imgs_gt_mono = tf.gather(imgs_gt_mono,indices=id_tau,axis=-1)
+        imgs_n_mono  = tf.gather(imgs_n_mono,indices=id_tau,axis=-1)
+        tau = tf.gather(tau,indices=id_tau,axis=-1)
 
-    m0      = maps_gt[...,0]
-    r2      = tf.math.divide_no_nan(rescale,maps_gt[...,1])
-    maps_gt = tf.stack((m0,r2),axis=-1)
-    tes     = tes/rescale
+    if task == 'T2mapping':
+        A  = maps_gt[...,0]
+        R2 = tf.math.divide_no_nan(rescale,maps_gt[...,1])
+        maps_gt = tf.stack((A,R2),axis=-1)
+    
+    if task == 'T1mapping':
+        A  = maps_gt[...,0]
+        B  = maps_gt[...,1]
+        R1 = tf.math.divide_no_nan(rescale,maps_gt[...,2])
+        maps_gt = tf.stack((A,B,R1),axis=-1)
+    tau = tau/rescale
 
+    # maskout background
+    mask = tf.where(seg>0.0,1.0,0.0)
+    maps_gt = maps_gt*mask
+    imgs_n_bi = imgs_n_bi*mask
+    imgs_gt_bi = imgs_gt_bi*mask
+    imgs_n_mono = imgs_n_mono*mask
+    imgs_gt_mono = imgs_gt_mono*mask
+
+    # mono-exponential or multi-exponential data.
     if data_type == 'multi': imgs_n,imgs_gt = imgs_n_bi,imgs_gt_bi
     if data_type == 'mono':  imgs_n,imgs_gt = imgs_n_mono,imgs_gt_mono
-
-    if model_type == 'unrolling': return ((imgs_n,tes),maps_gt)
+    # output data according to network type.
+    if model_type == 'unrolling': return ((imgs_n,tau),maps_gt)
     if model_type == 'cnn':       return (imgs_n,maps_gt)
-    if model_type == 'test':      return ((imgs_n,tes),maps_gt,seg)
-    if model_type == 'self-superwised unrolling': return ((imgs_n,tes),imgs_gt)
-    if model_type == 'self-superwised cnn':       return (imgs_n,imgs_gt)
+    if model_type == 'test':      return ((imgs_n,tau),maps_gt,seg)
 
 def findLastCheckpoint(save_dir):
     file_list = glob.glob(os.path.join(save_dir,'model_*.h5'))  # get name list of all .hdf5 files
@@ -580,64 +661,6 @@ def lr_schedule(epoch):
         lr = initial_lr/16
     else:
         lr = initial_lr/32 
-    return lr
-
-def lr_schedule2(epoch):
-    initial_lr = 0.0005
-    if epoch<=10:
-        lr = initial_lr
-    elif epoch<=20:
-        lr = initial_lr/2
-    elif epoch<=40:
-        lr = initial_lr/4
-    elif epoch<=80:
-        lr = initial_lr/8
-    elif epoch<=160:
-        lr = initial_lr/16
-    else:
-        lr = initial_lr/32 
-    return lr
-
-def lr_schedule3(epoch):
-    initial_lr = 0.0001
-    if epoch<=50:
-        lr = initial_lr
-    elif epoch<=100:
-        lr = initial_lr/2
-    else:
-        lr = initial_lr/4
-    return lr
-
-def lr_schedule4(epoch):
-    initial_lr = 0.001
-    if epoch<=10:
-        lr = initial_lr
-    elif epoch<=20:
-        lr = initial_lr/2
-    elif epoch<=30:
-        lr = initial_lr/4
-    elif epoch<=40:
-        lr = initial_lr/8
-    elif epoch<=50:
-        lr = initial_lr/16
-    else:
-        lr = initial_lr/32 
-    return lr
-
-def lr_schedule_warm_up(epoch):
-    initial_lr = 0.0001
-    if epoch <= 10:
-        lr = initial_lr*0.1*epoch
-    elif epoch<=20:
-        lr = initial_lr
-    elif epoch<=40:
-        lr = initial_lr/2
-    elif epoch<=80:
-        lr = initial_lr/4
-    elif epoch<=160:
-        lr = initial_lr/8
-    else:
-        lr = initial_lr/16 
     return lr
 
 def get_len(dataset):

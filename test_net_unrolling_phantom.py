@@ -3,8 +3,8 @@ import tensorflow as tf
 import os
 
 import unrollingnet.ADMMREDNet as admmnet
-import unrollingnet.DOPAMINE as dopamine
-import unrollingnet.RIM as rim
+import unrollingnet.DOPAMINE_T2 as dopamine
+import unrollingnet.RIM_T2 as rim
 import config
 
 config.config_gpu(5)
