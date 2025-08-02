@@ -1,2 +1,2 @@
-# mmpm-net
-A model-based magnetic resonance parameter mapping network.
+# MMPM-Net
+A **m**odel-based **m**agnetic resonance **p**arameter **m**apping **net**work.
